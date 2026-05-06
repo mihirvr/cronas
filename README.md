@@ -1,18 +1,30 @@
-# Distributed Webhook Scheduler (Cron-as-a-Service)
+# Cronas — Distributed Webhook Scheduler
 
-A resilient, distributed background job manager built with **Spring Boot**, **Redis**, and **PostgreSQL**.
+Cronas is a high-availability **Cron-as-a-Service** platform built with **Spring Boot**, **Redis**, and **PostgreSQL**.
 
-This system allows users to schedule precision-timed HTTP callbacks (webhooks) with guaranteed delivery and distributed fault tolerance.
+It allows developers to schedule precision-timed HTTP callbacks (webhooks) with guaranteed **exactly-once delivery**, even when deployed in a distributed, multi-node environment.
 
 ---
 
-# 🚀 The Architecture Challenge
+# 🚀 The Problem
 
-Standard in-memory schedulers (like Spring's default `@Scheduled`) fail in distributed environments.
+In a distributed system, a standard Spring Boot `@Scheduled` task becomes a liability.
 
-If you scale your application to multiple Docker containers, every instance will attempt to execute the same task simultaneously.
+If you run three instances of your service:
 
-This project implements **Distributed Locking** and **Optimistic Concurrency Control** to ensure that in a cluster of `N` nodes, a job is executed **exactly once**.
+- All three instances poll the database simultaneously
+- All three detect the same pending job
+- All three execute the same webhook
+
+This creates duplicate executions and inconsistent state.
+
+Cronas solves this using:
+
+- **Distributed Locking**
+- **State Machine Transitions**
+- **Optimistic Concurrency Control**
+
+This guarantees that only one instance successfully claims and executes a job.
 
 ---
 
@@ -20,85 +32,135 @@ This project implements **Distributed Locking** and **Optimistic Concurrency Con
 
 | Component | Technology | Purpose |
 |---|---|---|
-| **Backend** | Java 17 / Spring Boot 3 | Core application framework |
-| **Database** | PostgreSQL | Persistent job storage, history, and state management |
-| **Distributed Lock** | Redis (Redisson) | Ensuring only one node processes a specific job |
-| **HTTP Client** | Spring WebFlux (`WebClient`) | Non-blocking, reactive webhook execution |
-| **Containerization** | Docker / Docker Compose | Local development and horizontal scaling simulation |
+| **Backend** | Java 17 / Spring Boot 3 | Core application and business logic |
+| **Database** | PostgreSQL | Persistent job storage and execution logs |
+| **Distributed Lock** | Redis (Redisson) | Preventing race conditions across nodes |
+| **HTTP Client** | Spring WebFlux (`WebClient`) | Resilient, non-blocking webhook execution |
+| **Containerization** | Docker / Docker Compose | Scaling and environment orchestration |
 
 ---
 
-# 🏗️ System Workflow
+# 🏗️ How It Works
 
-## 1. Ingestion
-A user submits a `POST` request with:
+## 1. Job Submission
+
+A client submits a `POST` request containing:
+
 - Webhook URL
+- HTTP method
 - JSON payload
-- Target execution timestamp
+- `scheduledTime`
+
+---
 
 ## 2. Persistence
-The job is stored in PostgreSQL with status:
+
+The job is stored in PostgreSQL with the status:
 
 ```text
 PENDING
 ```
 
-The `scheduled_time` column is indexed for high-performance polling.
+---
 
-## 3. Polling & Distributed Locking
+## 3. Polling Engine
 
-A manager thread runs every second and:
+A scheduler thread polls the database every second for jobs whose scheduled time has arrived.
 
-- Fetches jobs that are due
-- Attempts to acquire a Redis distributed lock
+---
+
+## 4. Distributed Lock Acquisition
+
+Before processing a job, an application instance must acquire a Redis lock using the Job ID.
 
 Example:
 
 ```java
-redisson.getLock("job_" + id)
+redisson.getLock("job_" + jobId)
 ```
 
-## 4. Execution
+### Scenario
 
-The node that successfully acquires the lock:
+| Instance | Result |
+|---|---|
+| Instance A | ✅ Acquires lock |
+| Instance B | ❌ Skips job |
+| Instance C | ❌ Skips job |
 
-1. Marks the job as `IN_PROGRESS`
-2. Fires the webhook request
+Only the lock owner can continue execution.
 
-## 5. Resiliency & Retry Logic
+---
 
-If the webhook fails (for example, HTTP `5xx`), the system schedules a retry using **Exponential Backoff**.
+## 5. Execution & Retry Logic
+
+The winning node executes the webhook request.
+
+If the request fails with a retriable error (such as HTTP `5xx`), the system schedules a retry using **Exponential Backoff**.
 
 Formula:
 
-```math
-NextRetry = InitialDelay × 2^(retry_count)
-```
+:contentReference[oaicite:0]{index=0}
+
+---
+
+## 6. Final State Transition
+
+Once processing finishes:
+
+| Condition | Final State |
+|---|---|
+| Successful webhook | `COMPLETED` |
+| Retry limit exceeded | `FAILED` |
+
+This creates a complete audit trail for every job.
 
 ---
 
 # 🌟 Key Features
 
-## ✅ Distributed Lock Management
-Prevents duplicate execution across multiple application nodes.
+## ✅ Exactly-Once Execution
 
-## ✅ Idempotency Support
-Each webhook includes an `X-Job-ID` header so downstream services can safely handle duplicate requests.
+Guaranteed using Redis distributed locks powered by Redisson.
 
-## ✅ Dead Letter Queue (DLQ) Logic
-Jobs that exceed maximum retry attempts are moved to a `FAILED` state for manual inspection.
+---
 
-## ✅ Observability
-Spring Actuator endpoints expose:
-- Redis connection health
-- Thread pool metrics
-- System health status
+## ✅ Optimistic Concurrency Control
+
+Uses JPA entity versioning to prevent:
+
+- Dirty reads
+- Lost updates
+- Concurrent state corruption
+
+---
+
+## ✅ Idempotency Headers
+
+Automatically attaches:
+
+```http
+X-Cronas-Request-ID
+```
+
+to all outgoing webhooks so downstream systems can safely deduplicate requests.
+
+---
+
+## ✅ Horizontal Scalability
+
+Designed for clustered deployment environments where nodes can be:
+
+- Added dynamically
+- Removed safely
+- Restarted independently
+
+without disrupting scheduling guarantees.
 
 ---
 
 # 📡 API Contract
 
-## Schedule a Webhook
+## Schedule a New Webhook
 
 ### Endpoint
 
@@ -110,70 +172,120 @@ POST /api/v1/jobs
 
 ```json
 {
-  "webhookUrl": "https://api.thirdparty.com/callback",
+  "webhookUrl": "https://api.your-service.com/callback",
   "method": "POST",
   "payload": {
-    "orderId": "12345",
-    "status": "shipped"
+    "userId": "99",
+    "event": "subscription_expired"
   },
-  "scheduledTime": "2024-12-31T23:59:59Z"
+  "scheduledTime": "2026-06-01T12:00:00Z"
 }
 ```
 
-### Success Response
+### Example Response
 
 ```json
 {
-  "jobId": "a1b2c3d4",
+  "jobId": "8f21a9c3",
   "status": "PENDING",
-  "scheduledTime": "2024-12-31T23:59:59Z"
+  "scheduledTime": "2026-06-01T12:00:00Z"
 }
 ```
 
 ---
 
-# 🧠 Core Concepts Used
+# 📂 Project Structure
 
-- Distributed Systems
-- Concurrency Control
-- Optimistic Locking
-- Reactive Programming
-- Fault Tolerance
-- Retry Mechanisms
-- Event Scheduling
-- Horizontal Scaling
+```text
+├── src/main/java/com/cronas
+│   ├── api          # Controller layer for job ingestion
+│   ├── config       # Redis (Redisson) & WebClient configuration
+│   ├── core         # Scheduler engine & distributed locking logic
+│   ├── model        # Entities (Job, ExecutionHistory)
+│   ├── repository   # PostgreSQL JPA repositories
+│   └── service      # Webhook execution & retry orchestration
+│
+├── docker-compose.yml  # App + Redis + PostgreSQL orchestration
+└── README.md
+```
 
 ---
 
-# 🐳 Running the Project
+# 🚥 Getting Started
 
-## Clone the Repository
-
-```bash
-git clone https://github.com/yourusername/your-repo.git
-cd your-repo
-```
-
-## Start Services
+## 1. Launch Infrastructure
 
 ```bash
-docker-compose up --build
+docker-compose up -d
 ```
+
+---
+
+## 2. Run the Application
+
+```bash
+./mvnw spring-boot:run
+```
+
+---
+
+## 3. Test Distributed Execution
+
+Scale the application to three instances:
+
+```bash
+docker-compose up --scale app=3
+```
+
+You can now observe the distributed lock manager ensuring that only one instance executes each scheduled job.
+
+---
+
+# 🧠 Core Engineering Concepts
+
+- Distributed Systems
+- Distributed Locking
+- Exactly-Once Processing
+- Reactive Programming
+- State Machines
+- Retry Orchestration
+- Fault Tolerance
+- Horizontal Scaling
+- Concurrency Control
 
 ---
 
 # 📈 Future Improvements
 
-- Cron expression support
-- Web dashboard for monitoring jobs
+- Cron expression scheduling
+- Web dashboard for job monitoring
 - Kafka/RabbitMQ integration
-- Rate limiting
-- Multi-tenant scheduling
 - Priority queues
-- Metrics dashboard with Prometheus + Grafana
+- Multi-tenant scheduling
+- Prometheus + Grafana metrics
+- Rate limiting and throttling
+- Dead-letter queue visualization
+
+---
+
+# 🐳 Deployment Architecture
+
+Cronas is designed to run in cloud-native environments using:
+
+- Docker
+- Kubernetes
+- ECS
+- Distributed Redis
+- Managed PostgreSQL
+
+The system remains operational even as application instances scale horizontally.
 
 ---
 
 # 📜 License
 
 MIT License
+
+---
+
+Built for reliability. Scaled for the cloud.
