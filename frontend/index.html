@@ -1,0 +1,1853 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cronas Engine — Distributed Webhook Scheduling</title>
+  <meta name="description" content="A distributed, horizontally-scalable webhook scheduling engine built for guaranteed exactly-once delivery. Java 21 Virtual Threads, Redis Distributed Locking, PostgreSQL SKIP LOCKED." />
+  <meta name="keywords" content="webhook, scheduler, distributed systems, Java, Spring Boot, PostgreSQL, Redis, exactly-once delivery" />
+  <meta name="author" content="Mihir Revaskar" />
+
+  <link rel="icon" type="image/png" href="logo.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ───────────────────── DESIGN TOKENS ───────────────────── */
+    :root {
+      --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+      /* Transition */
+      --transition-speed: 0.35s;
+      --transition-fn: cubic-bezier(0.4, 0, 0.2, 1);
+
+      /* Accent — drawn from the logo's orange */
+      --accent: #F28C28;
+      --accent-soft: #F28C2822;
+      --accent-glow: #F28C2840;
+    }
+
+    /* ── Dark Theme (default) ── */
+    [data-theme="dark"] {
+      --bg-primary: #0B0E13;
+      --bg-secondary: #12161D;
+      --bg-card: #161B24;
+      --bg-card-hover: #1C2230;
+      --bg-code: #1A1F2A;
+      --border-color: #1E2533;
+      --border-subtle: #161B24;
+
+      --text-primary: #E8ECF1;
+      --text-secondary: #8B95A8;
+      --text-tertiary: #5A6478;
+
+      --clock-face: rgba(242, 140, 40, 0.03);
+      --clock-stroke: rgba(242, 140, 40, 0.08);
+      --clock-tick: rgba(242, 140, 40, 0.12);
+      --clock-hand: rgba(242, 140, 40, 0.15);
+      --dot-color: rgba(242, 140, 40, 0.04);
+
+      --github-bg: #F28C28;
+      --github-text: #0B0E13;
+      --github-hover: #E07B1A;
+
+      --badge-bg: #1A1F2A;
+      --badge-border: #252C3A;
+    }
+
+    /* ── Light Theme ── */
+    [data-theme="light"] {
+      --bg-primary: #FAFBFC;
+      --bg-secondary: #F1F3F6;
+      --bg-card: #FFFFFF;
+      --bg-card-hover: #F7F8FA;
+      --bg-code: #F4F5F7;
+      --border-color: #E2E6EC;
+      --border-subtle: #EEF0F4;
+
+      --text-primary: #1A1D24;
+      --text-secondary: #5A6478;
+      --text-tertiary: #8B95A8;
+
+      --clock-face: rgba(242, 140, 40, 0.04);
+      --clock-stroke: rgba(242, 140, 40, 0.10);
+      --clock-tick: rgba(242, 140, 40, 0.14);
+      --clock-hand: rgba(242, 140, 40, 0.18);
+      --dot-color: rgba(242, 140, 40, 0.05);
+
+      --github-bg: #1A1D24;
+      --github-text: #FFFFFF;
+      --github-hover: #2C3040;
+
+      --badge-bg: #F1F3F6;
+      --badge-border: #E2E6EC;
+
+      --accent-soft: #F28C2818;
+    }
+
+    /* ───────────────────── RESET & BASE ───────────────────── */
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.7;
+      transition: background var(--transition-speed) var(--transition-fn),
+                  color var(--transition-speed) var(--transition-fn);
+      overflow-x: hidden;
+    }
+
+    /* ───────────────────── ANIMATED BACKGROUND ───────────────────── */
+    #clock-bg {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* ───────────────────── LAYOUT ───────────────────── */
+    .page-wrapper {
+      position: relative;
+      z-index: 1;
+    }
+
+    .container {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* ───────────────────── NAV ───────────────────── */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border-subtle);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      transition: background var(--transition-speed) var(--transition-fn),
+                  border-color var(--transition-speed) var(--transition-fn);
+    }
+
+    [data-theme="dark"] .nav {
+      background: rgba(11, 14, 19, 0.85);
+    }
+
+    [data-theme="light"] .nav {
+      background: rgba(250, 251, 252, 0.85);
+    }
+
+    .nav-inner {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 24px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text-primary);
+    }
+
+    .nav-brand img {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+    }
+
+    .nav-brand span {
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ── Theme Toggle ── */
+    .theme-toggle {
+      width: 40px;
+      height: 40px;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .theme-toggle:hover {
+      background: var(--bg-card-hover);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .theme-toggle svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    [data-theme="dark"] .icon-sun { display: block; }
+    [data-theme="dark"] .icon-moon { display: none; }
+    [data-theme="light"] .icon-sun { display: none; }
+    [data-theme="light"] .icon-moon { display: block; }
+
+    /* ── GitHub Button ── */
+    .btn-github {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 10px;
+      background: var(--github-bg);
+      color: var(--github-text);
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      border: none;
+      cursor: pointer;
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .btn-github:hover {
+      background: var(--github-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(242, 140, 40, 0.15);
+    }
+
+    .btn-github svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+
+    /* ───────────────────── HERO ───────────────────── */
+    .hero {
+      padding: 100px 0 80px;
+      text-align: center;
+    }
+
+    .hero-logo {
+      width: 80px;
+      height: 80px;
+      border-radius: 20px;
+      margin-bottom: 32px;
+      filter: drop-shadow(0 0 40px rgba(242, 140, 40, 0.2));
+      animation: float 6s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-8px); }
+    }
+
+    .hero h1 {
+      font-size: clamp(2.2rem, 5vw, 3.2rem);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1.15;
+      margin-bottom: 20px;
+      background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-subtitle {
+      font-size: 1.12rem;
+      color: var(--text-secondary);
+      max-width: 580px;
+      margin: 0 auto 40px;
+      line-height: 1.7;
+      font-weight: 400;
+    }
+
+    .hero-badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 40px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 100px;
+      background: var(--badge-bg);
+      border: 1px solid var(--badge-border);
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      letter-spacing: -0.01em;
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .badge:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .hero-cta {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 28px;
+      border-radius: 12px;
+      background: var(--github-bg);
+      color: var(--github-text);
+      text-decoration: none;
+      font-size: 0.92rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .btn-primary:hover {
+      background: var(--github-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(242, 140, 40, 0.2);
+    }
+
+    .btn-primary svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 28px;
+      border-radius: 12px;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      text-decoration: none;
+      font-size: 0.92rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      border: 1px solid var(--border-color);
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    /* ───────────────────── SECTIONS ───────────────────── */
+    .section {
+      padding: 60px 0;
+    }
+
+    .section-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      font-size: 1.7rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+      line-height: 1.25;
+    }
+
+    .section-desc {
+      color: var(--text-secondary);
+      font-size: 1rem;
+      max-width: 620px;
+      line-height: 1.75;
+      margin-bottom: 40px;
+    }
+
+    /* ── Divider ── */
+    .divider {
+      border: none;
+      height: 1px;
+      background: var(--border-color);
+      margin: 0;
+      transition: background var(--transition-speed) var(--transition-fn);
+    }
+
+    /* ───────────────────── FEATURE CARDS ───────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .feature-card {
+      padding: 28px;
+      border-radius: 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .feature-card:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(242, 140, 40, 0.06);
+    }
+
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: var(--accent-soft);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      color: var(--accent);
+    }
+
+    .feature-icon svg {
+      width: 20px;
+      height: 20px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .feature-card h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+
+    .feature-card p {
+      font-size: 0.88rem;
+      color: var(--text-secondary);
+      line-height: 1.65;
+    }
+
+    /* ───────────────────── ARCHITECTURE DIAGRAM ───────────────────── */
+    .arch-visual {
+      padding: 32px;
+      border-radius: 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      overflow-x: auto;
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .arch-flow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: nowrap;
+      padding: 20px 0;
+    }
+
+    .arch-node {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      padding: 16px 14px;
+      border-radius: 12px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      min-width: 0;
+      flex: 1 1 0;
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .arch-node:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .arch-node-icon {
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .arch-node-icon svg {
+      width: 24px;
+      height: 24px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .arch-node-label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      text-align: center;
+    }
+
+    .arch-node-sub {
+      font-size: 0.7rem;
+      color: var(--text-tertiary);
+      font-family: var(--font-mono);
+    }
+
+    .arch-arrow {
+      color: var(--accent);
+      font-size: 1.2rem;
+      flex-shrink: 0;
+    }
+
+    /* ── State Machine ── */
+    .state-machine {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-top: 24px;
+      padding: 24px;
+      border-radius: 12px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+    }
+
+    .state-node {
+      padding: 8px 18px;
+      border-radius: 8px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      letter-spacing: -0.01em;
+    }
+
+    .state-pending {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+
+    .state-progress {
+      background: rgba(59, 130, 246, 0.1);
+      color: #3B82F6;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .state-completed {
+      background: rgba(34, 197, 94, 0.1);
+      color: #22C55E;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+
+    .state-failed {
+      background: rgba(239, 68, 68, 0.1);
+      color: #EF4444;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .state-arrow {
+      color: var(--text-tertiary);
+      font-size: 0.9rem;
+    }
+
+    /* ───────────────────── DEEP DIVE / TECH CARDS ───────────────────── */
+    .tech-card {
+      padding: 32px;
+      border-radius: 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      margin-bottom: 16px;
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .tech-card:hover {
+      border-color: var(--accent);
+    }
+
+    .tech-card-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .tech-card-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      background: var(--accent-soft);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: var(--accent);
+    }
+
+    .tech-card-icon svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .tech-card h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .tech-card p {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      line-height: 1.75;
+      margin-bottom: 16px;
+    }
+
+    .tech-card p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* ── Code Blocks ── */
+    .code-block {
+      border-radius: 12px;
+      background: var(--bg-code);
+      border: 1px solid var(--border-color);
+      overflow: hidden;
+      margin: 16px 0;
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border-color);
+      font-size: 0.72rem;
+      color: var(--text-tertiary);
+      font-family: var(--font-mono);
+      font-weight: 500;
+    }
+
+    .code-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .code-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--border-color);
+    }
+
+    .code-block pre {
+      padding: 16px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.65;
+      color: var(--text-secondary);
+    }
+
+    .code-block code {
+      font-family: inherit;
+    }
+
+    .code-keyword { color: #C678DD; }
+    .code-string { color: #98C379; }
+    .code-comment { color: var(--text-tertiary); font-style: italic; }
+    .code-type { color: #E5C07B; }
+    .code-number { color: #D19A66; }
+    .code-method { color: #61AFEF; }
+    .code-sql-keyword { color: #C678DD; font-weight: 600; }
+
+    [data-theme="light"] .code-keyword { color: #A626A4; }
+    [data-theme="light"] .code-string { color: #50A14F; }
+    [data-theme="light"] .code-comment { color: #A0A1A7; }
+    [data-theme="light"] .code-type { color: #C18401; }
+    [data-theme="light"] .code-number { color: #986801; }
+    [data-theme="light"] .code-method { color: #4078F2; }
+    [data-theme="light"] .code-sql-keyword { color: #A626A4; }
+
+    /* ───────────────────── DEPENDENCY TABLE ───────────────────── */
+    .dep-table-wrapper {
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      overflow: hidden;
+      background: var(--bg-card);
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .dep-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+
+    .dep-table thead {
+      background: var(--bg-secondary);
+    }
+
+    .dep-table th {
+      padding: 14px 20px;
+      text-align: left;
+      font-weight: 600;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-tertiary);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .dep-table td {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+
+    .dep-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .dep-table tr {
+      transition: background var(--transition-speed) var(--transition-fn);
+    }
+
+    .dep-table tbody tr:hover {
+      background: var(--bg-card-hover);
+    }
+
+    .dep-name {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+    }
+
+    /* ───────────────────── QUICK START ───────────────────── */
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .step {
+      display: flex;
+      gap: 16px;
+      padding: 24px;
+      border-radius: 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .step:hover {
+      border-color: var(--accent);
+    }
+
+    .step-number {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.82rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .step-content h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+      letter-spacing: -0.01em;
+    }
+
+    .step-content p {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .step-content .code-block {
+      margin-top: 12px;
+    }
+
+    /* ───────────────────── API SECTION ───────────────────── */
+    .api-endpoint {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      margin-bottom: 20px;
+    }
+
+    .api-method {
+      font-size: 0.72rem;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      color: var(--accent);
+      letter-spacing: 0.04em;
+    }
+
+    .api-path {
+      font-size: 0.82rem;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .api-fields {
+      margin-top: 20px;
+    }
+
+    .api-field {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .api-field:last-child {
+      border-bottom: none;
+    }
+
+    .api-field-name {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      min-width: 130px;
+      flex-shrink: 0;
+    }
+
+    .api-field-type {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 2px 8px;
+      border-radius: 4px;
+      min-width: 70px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .api-field-desc {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .api-field-req {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+
+    .req-yes {
+      background: rgba(34, 197, 94, 0.1);
+      color: #22C55E;
+    }
+
+    .req-no {
+      background: var(--bg-secondary);
+      color: var(--text-tertiary);
+    }
+
+    /* ───────────────────── SERVICES TABLE ───────────────────── */
+    .services-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .service-card {
+      padding: 20px;
+      border-radius: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    .service-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .service-name {
+      font-size: 0.88rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .service-url {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+    }
+
+    .service-desc {
+      font-size: 0.78rem;
+      color: var(--text-tertiary);
+      margin-top: 6px;
+    }
+
+    /* ───────────────────── FOOTER ───────────────────── */
+    .footer {
+      padding: 60px 0 40px;
+      text-align: center;
+    }
+
+    .footer-tagline {
+      font-size: 0.88rem;
+      color: var(--text-tertiary);
+      margin-bottom: 20px;
+      font-style: italic;
+    }
+
+    .footer-author {
+      margin-bottom: 24px;
+    }
+
+    .footer-author-name {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .footer-author-title {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      margin-bottom: 2px;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+    }
+
+    .footer-link {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color var(--transition-speed) var(--transition-fn);
+    }
+
+    .footer-link:hover {
+      color: var(--accent);
+    }
+
+    .footer-bottom {
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      padding-top: 24px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    /* ───────────────────── RESPONSIVE ───────────────────── */
+    @media (max-width: 700px) {
+      .features-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        padding: 70px 0 50px;
+      }
+
+      .arch-flow {
+        flex-direction: column;
+      }
+
+      .arch-arrow {
+        transform: rotate(90deg);
+      }
+
+      .dep-table th:last-child,
+      .dep-table td:last-child {
+        display: none;
+      }
+
+      .api-field {
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .state-machine {
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .state-arrow {
+        transform: rotate(90deg);
+      }
+
+      .services-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .section-title {
+        font-size: 1.4rem;
+      }
+    }
+
+    /* ───────────────────── SCROLL ANIMATIONS ───────────────────── */
+    .fade-in {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.6s var(--transition-fn), transform 0.6s var(--transition-fn);
+    }
+
+    .fade-in.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ───────────────────── LIVE CLOCK ───────────────────── */
+    .live-clock {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-tertiary);
+      letter-spacing: 0.02em;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      transition: all var(--transition-speed) var(--transition-fn);
+    }
+
+    @media (max-width: 500px) {
+      .live-clock {
+        display: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <!-- ── Animated Clock Background ── -->
+  <canvas id="clock-bg"></canvas>
+
+  <div class="page-wrapper">
+
+    <!-- ═══════════════ NAV ═══════════════ -->
+    <nav class="nav" id="nav">
+      <div class="nav-inner">
+        <a href="#" class="nav-brand">
+          <img src="logo.png" alt="Cronas Logo" />
+          <span>Cronas Engine</span>
+        </a>
+        <div class="nav-actions">
+          <span class="live-clock" id="live-clock"></span>
+          <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+            <!-- Sun icon (shown in dark mode) -->
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+            <!-- Moon icon (shown in light mode) -->
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+          </button>
+          <a href="https://github.com/mihirvr/cronas" target="_blank" rel="noopener noreferrer" class="btn-github" id="nav-github-btn">
+            <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+            GitHub
+          </a>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ═══════════════ HERO ═══════════════ -->
+    <section class="hero" id="hero">
+      <div class="container">
+        <img src="logo.png" alt="Cronas Engine" class="hero-logo" />
+        <h1>Distributed Webhook<br/>Scheduling Engine</h1>
+        <p class="hero-subtitle">
+          Production-grade delayed webhook delivery with guaranteed exactly-once execution.
+          Built on Java 21 Virtual Threads, Redis distributed locking, and PostgreSQL SKIP LOCKED.
+        </p>
+        <div class="hero-badges">
+          <span class="badge"><span class="badge-dot"></span>Java 21</span>
+          <span class="badge"><span class="badge-dot"></span>Spring Boot 4.0</span>
+          <span class="badge"><span class="badge-dot"></span>PostgreSQL 16</span>
+          <span class="badge"><span class="badge-dot"></span>Redis 7.2</span>
+          <span class="badge"><span class="badge-dot"></span>Docker</span>
+          <span class="badge"><span class="badge-dot"></span>Prometheus + Grafana</span>
+        </div>
+        <div class="hero-cta">
+          <a href="https://github.com/mihirvr/cronas" target="_blank" rel="noopener noreferrer" class="btn-primary" id="hero-github-btn">
+            <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+            View on GitHub
+          </a>
+          <a href="#overview" class="btn-secondary">
+            Learn More ↓
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- ═══════════════ OVERVIEW ═══════════════ -->
+    <section class="section fade-in" id="overview">
+      <div class="container">
+        <span class="section-label">Overview</span>
+        <h2 class="section-title">What Is Cronas?</h2>
+        <p class="section-desc">
+          Cronas Engine is a production-grade <strong>delayed webhook delivery service</strong>. Clients submit a job — a target URL, HTTP method, optional payload, and a future scheduled time — via a REST API. The engine persists the job to PostgreSQL, then a cluster of nodes races to execute it at the correct moment.
+        </p>
+        <p class="section-desc">
+          The hard problem is <strong>distributed coordination</strong>: when multiple nodes poll the same database table simultaneously, only <em>one</em> node must fire the webhook. Cronas solves this with two independent, layered contention barriers.
+        </p>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- ═══════════════ KEY FEATURES ═══════════════ -->
+    <section class="section fade-in" id="features">
+      <div class="container">
+        <span class="section-label">Features</span>
+        <h2 class="section-title">Why Cronas?</h2>
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+            <h3>Exactly-Once Delivery</h3>
+            <p>Dual-layer contention prevention with PostgreSQL SKIP LOCKED and Redis distributed locking guarantees every webhook fires precisely once.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+            <h3>Virtual Threads</h3>
+            <p>Java 21 Project Loom virtual threads handle thousands of concurrent outbound HTTP requests with negligible OS resource overhead.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+            <h3>Horizontally Scalable</h3>
+            <p>Scale to any number of nodes with a single <code>docker-compose up --scale</code> command. Fully stateless polling and execution logic.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div>
+            <h3>Fault Tolerant</h3>
+            <p>Exponential backoff retry with dead letter queue. Failed jobs are never silently discarded — they remain available for post-mortem inspection.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
+            <h3>Full Observability</h3>
+            <p>Prometheus + Grafana pipeline with auto-discovery of scaled containers. Monitor HikariCP, JVM heap, GC, and virtual thread utilization out of the box.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg></div>
+            <h3>One-Command Deploy</h3>
+            <p>The entire stack — Postgres, Redis, app cluster, Prometheus, Grafana — runs from a single <code>docker-compose up</code> command.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- ═══════════════ ARCHITECTURE ═══════════════ -->
+    <section class="section fade-in" id="architecture">
+      <div class="container">
+        <span class="section-label">Architecture</span>
+        <h2 class="section-title">How It Works</h2>
+        <p class="section-desc">
+          Clients submit jobs via REST API. The cluster polls PostgreSQL every second, distributing rows across nodes with SKIP LOCKED, then applying Redisson distributed locks for final mutual exclusion before firing the webhook.
+        </p>
+        <div class="arch-visual">
+          <div class="arch-flow">
+            <div class="arch-node">
+              <span class="arch-node-icon"><svg viewBox="0 0 24 24"><path d="M2 12h4"/><path d="M6 8v8"/><path d="M10 4v16"/><path d="M14 6v12"/><path d="M18 8v8"/><path d="M22 12h-4"/></svg></span>
+              <span class="arch-node-label">Client</span>
+              <span class="arch-node-sub">POST /api/v1/jobs</span>
+            </div>
+            <span class="arch-arrow">→</span>
+            <div class="arch-node">
+              <span class="arch-node-icon"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="16" height="13" rx="2"/><path d="M18 10h2a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2h-2"/><path d="M6 3v4"/><path d="M10 3v4"/><path d="M14 3v4"/></svg></span>
+              <span class="arch-node-label">Cronas Cluster</span>
+              <span class="arch-node-sub">N × Spring Boot</span>
+            </div>
+            <span class="arch-arrow">→</span>
+            <div class="arch-node">
+              <span class="arch-node-icon"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
+              <span class="arch-node-label">PostgreSQL</span>
+              <span class="arch-node-sub">SKIP LOCKED</span>
+            </div>
+            <span class="arch-arrow">+</span>
+            <div class="arch-node">
+              <span class="arch-node-icon"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+              <span class="arch-node-label">Redis</span>
+              <span class="arch-node-sub">RLock (15s TTL)</span>
+            </div>
+            <span class="arch-arrow">→</span>
+            <div class="arch-node">
+              <span class="arch-node-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>
+              <span class="arch-node-label">Target Webhook</span>
+              <span class="arch-node-sub">POST https://…</span>
+            </div>
+          </div>
+
+          <div class="state-machine">
+            <span class="state-node state-pending">PENDING</span>
+            <span class="state-arrow">→</span>
+            <span class="state-node state-progress">IN_PROGRESS</span>
+            <span class="state-arrow">→</span>
+            <span class="state-node state-completed">COMPLETED</span>
+            <span class="state-arrow" style="margin-left: 16px;">↺</span>
+            <span class="state-node state-pending">RETRY</span>
+            <span class="state-arrow">→</span>
+            <span class="state-node state-failed">FAILED</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- ═══════════════ TECHNICAL DEEP DIVE ═══════════════ -->
+    <section class="section fade-in" id="deep-dive">
+      <div class="container">
+        <span class="section-label">Technical Deep Dive</span>
+        <h2 class="section-title">Under the Hood</h2>
+
+        <!-- Dual Layer -->
+        <div class="tech-card">
+          <div class="tech-card-header">
+            <div class="tech-card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+            <h3>Dual-Layer Contention Prevention</h3>
+          </div>
+          <p>
+            The polling loop runs on <strong>every node in the cluster</strong> every 1,000 ms. Without coordination, every node would attempt to execute every eligible job simultaneously. Cronas prevents this at two independent layers.
+          </p>
+          <p><strong>Layer 1 — PostgreSQL SKIP LOCKED</strong></p>
+          <div class="code-block">
+            <div class="code-header">
+              <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+              <span>SQL — Polling Query</span>
+            </div>
+            <pre><code><span class="code-sql-keyword">SELECT</span> * <span class="code-sql-keyword">FROM</span> jobs
+<span class="code-sql-keyword">WHERE</span> state = <span class="code-string">'PENDING'</span>
+<span class="code-sql-keyword">AND</span> scheduled_time &lt;= <span class="code-method">NOW</span>()
+<span class="code-sql-keyword">LIMIT</span> <span class="code-number">100</span>
+<span class="code-sql-keyword">FOR UPDATE SKIP LOCKED</span>;</code></pre>
+          </div>
+          <p><strong>Layer 2 — Redisson Distributed Lock</strong></p>
+          <div class="code-block">
+            <div class="code-header">
+              <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+              <span>Java — Redis Lock Acquisition</span>
+            </div>
+            <pre><code><span class="code-type">RLock</span> lock = redissonClient.<span class="code-method">getLock</span>(<span class="code-string">"cronas:lock:"</span> + job.<span class="code-method">getJobId</span>());
+<span class="code-keyword">if</span> (lock.<span class="code-method">tryLock</span>(<span class="code-number">0</span>, <span class="code-number">15</span>, <span class="code-type">TimeUnit</span>.SECONDS)) {
+    <span class="code-comment">// Only one node reaches here per job</span>
+    webhookExecutor.<span class="code-method">fireWebhook</span>(job);
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- Virtual Threads -->
+        <div class="tech-card">
+          <div class="tech-card-header">
+            <div class="tech-card-icon"><svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+            <h3>Java 21 Virtual Threads (Project Loom)</h3>
+          </div>
+          <p>
+            The <code>JobPoller</code> dispatches every job onto a <strong>virtual thread</strong> via <code>Executors.newVirtualThreadPerTaskExecutor()</code>. Virtual threads are lightweight, JVM-managed threads that park rather than block on I/O, allowing thousands of concurrent outbound HTTP requests with negligible OS resource consumption.
+          </p>
+          <div class="code-block">
+            <div class="code-header">
+              <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+              <span>Java — JobPoller.java</span>
+            </div>
+            <pre><code><span class="code-keyword">private final</span> <span class="code-type">ExecutorService</span> virtualThreadExecutor =
+    <span class="code-type">Executors</span>.<span class="code-method">newVirtualThreadPerTaskExecutor</span>();
+
+<span class="code-keyword">@Scheduled</span>(fixedDelay = <span class="code-number">1000</span>)
+<span class="code-keyword">public void</span> <span class="code-method">pollAndExecute</span>() {
+    <span class="code-type">List</span>&lt;<span class="code-type">Job</span>&gt; ripeJobs = jobRepository.<span class="code-method">findExecutableJobsWithLock</span>(<span class="code-number">100</span>);
+    <span class="code-keyword">for</span> (<span class="code-type">Job</span> job : ripeJobs) {
+        virtualThreadExecutor.<span class="code-method">submit</span>(() -&gt; <span class="code-method">processJobSafely</span>(job));
+    }
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- Exponential Backoff -->
+        <div class="tech-card">
+          <div class="tech-card-header">
+            <div class="tech-card-icon"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div>
+            <h3>Exponential Backoff &amp; Dead Letter Queue</h3>
+          </div>
+          <p>
+            A failed webhook is not discarded. The retry state machine applies binary exponential backoff (1m → 2m → 4m → 8m…) before rescheduling. Once <code>retryCount ≥ maxRetries</code>, the job is permanently transitioned to <code>FAILED</code> — the dead letter queue pattern. Failed jobs remain in the database for post-mortem inspection.
+          </p>
+          <div class="code-block">
+            <div class="code-header">
+              <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+              <span>Java — Retry Logic</span>
+            </div>
+            <pre><code><span class="code-keyword">long</span> delayMinutes = (<span class="code-keyword">long</span>) <span class="code-type">Math</span>.<span class="code-method">pow</span>(<span class="code-number">2</span>, currentRetries); <span class="code-comment">// 1m → 2m → 4m → 8m…</span>
+job.<span class="code-method">setScheduledTime</span>(<span class="code-type">Instant</span>.<span class="code-method">now</span>().<span class="code-method">plus</span>(delayMinutes, <span class="code-type">ChronoUnit</span>.MINUTES));
+job.<span class="code-method">setState</span>(<span class="code-type">JobState</span>.PENDING); <span class="code-comment">// Re-enters the polling queue</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- ═══════════════ DEPENDENCIES ═══════════════ -->
+    <section class="section fade-in" id="dependencies">
+      <div class="container">
+        <span class="section-label">Stack</span>
+        <h2 class="section-title">Dependency Rationale</h2>
+        <div class="dep-table-wrapper">
+          <table class="dep-table">
+            <thead>
+              <tr>
+                <th>Dependency</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="dep-name">spring-boot-starter-webmvc</span></td>
+                <td>REST API layer. Paired with virtual threads for reactive-level throughput without WebFlux complexity.</td>
+              </tr>
+              <tr>
+                <td><span class="dep-name">spring-data-jpa + postgresql</span></td>
+                <td>Persistent, transactional job storage with HikariCP connection pool (max: 20, minIdle: 5).</td>
+              </tr>
+              <tr>
+                <td><span class="dep-name">flyway</span></td>
+                <td>Version-controlled schema migrations applied automatically on startup across all cluster nodes.</td>
+              </tr>
+              <tr>
+                <td><span class="dep-name">spring-boot-starter-validation</span></td>
+                <td>Bean Validation on DTOs — @NotBlank, @Future, @Min constraints enforced at the HTTP layer.</td>
+              </tr>
+              <tr>
+                <td><span class="dep-name">redisson 3.30.0</span></td>
+                <td>Distributed lock client with first-class RLock abstraction, TTL management, and zero-wait tryLock semantics.</td>
+              </tr>
+              <tr>
+                <td><span class="dep-name">micrometer + prometheus</span></td>
+                <td>Auto-instrumented metrics endpoint for HikariCP, JVM heap, GC, and virtual thread utilization.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- ═══════════════ QUICK START ═══════════════ -->
+    <section class="section fade-in" id="quickstart">
+      <div class="container">
+        <span class="section-label">Quick Start</span>
+        <h2 class="section-title">Get Running in Minutes</h2>
+        <p class="section-desc">Prerequisites: Docker and Docker Compose.</p>
+        <div class="steps">
+          <div class="step">
+            <span class="step-number">1</span>
+            <div class="step-content">
+              <h3>Clone the repository</h3>
+              <div class="code-block">
+                <div class="code-header">
+                  <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+                  <span>bash</span>
+                </div>
+                <pre><code>git clone https://github.com/mihirvr/cronas.git
+cd cronas</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="step">
+            <span class="step-number">2</span>
+            <div class="step-content">
+              <h3>Build and launch the full stack</h3>
+              <div class="code-block">
+                <div class="code-header">
+                  <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+                  <span>bash</span>
+                </div>
+                <pre><code>docker-compose up --build --scale cronas-app=3</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="step">
+            <span class="step-number">3</span>
+            <div class="step-content">
+              <h3>Schedule your first webhook</h3>
+              <div class="code-block">
+                <div class="code-header">
+                  <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+                  <span>bash</span>
+                </div>
+                <pre><code>curl -X POST http://localhost:9090/api/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targetUrl": "https://webhook.site/your-endpoint",
+    "httpMethod": "POST",
+    "payload": "{\"event\": \"order.confirmed\"}",
+    "scheduledTime": "2025-12-01T14:30:00Z",
+    "maxRetries": 3
+  }'</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 32px;">
+          <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 16px;">Service Endpoints</h3>
+          <div class="services-grid">
+            <div class="service-card">
+              <div class="service-name">Cronas Nodes</div>
+              <div class="service-url">:9090 / :9091 / :9092</div>
+              <div class="service-desc">Spring Boot application instances</div>
+            </div>
+            <div class="service-card">
+              <div class="service-name">PostgreSQL</div>
+              <div class="service-url">:5432</div>
+              <div class="service-desc">Job persistence layer</div>
+            </div>
+            <div class="service-card">
+              <div class="service-name">Prometheus</div>
+              <div class="service-url">:9095</div>
+              <div class="service-desc">Metrics scraper</div>
+            </div>
+            <div class="service-card">
+              <div class="service-name">Grafana</div>
+              <div class="service-url">:3000</div>
+              <div class="service-desc">Dashboard (admin / admin)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- ═══════════════ API REFERENCE ═══════════════ -->
+    <section class="section fade-in" id="api">
+      <div class="container">
+        <span class="section-label">API Reference</span>
+        <h2 class="section-title">Schedule a Webhook</h2>
+        <div class="api-endpoint">
+          <span class="api-method">POST</span>
+          <span class="api-path">/api/v1/jobs</span>
+        </div>
+        <div class="tech-card" style="margin-top: 0;">
+          <div class="api-fields">
+            <div class="api-field">
+              <span class="api-field-name">targetUrl</span>
+              <span class="api-field-type">string</span>
+              <span class="api-field-req req-yes">Required</span>
+              <span class="api-field-desc">Full URL to deliver the webhook to</span>
+            </div>
+            <div class="api-field">
+              <span class="api-field-name">httpMethod</span>
+              <span class="api-field-type">string</span>
+              <span class="api-field-req req-yes">Required</span>
+              <span class="api-field-desc">HTTP verb: POST, GET, PUT, PATCH</span>
+            </div>
+            <div class="api-field">
+              <span class="api-field-name">scheduledTime</span>
+              <span class="api-field-type">ISO 8601</span>
+              <span class="api-field-req req-yes">Required</span>
+              <span class="api-field-desc">Future UTC timestamp for delivery</span>
+            </div>
+            <div class="api-field">
+              <span class="api-field-name">payload</span>
+              <span class="api-field-type">string</span>
+              <span class="api-field-req req-no">Optional</span>
+              <span class="api-field-desc">JSON body as a serialised string</span>
+            </div>
+            <div class="api-field">
+              <span class="api-field-name">headers</span>
+              <span class="api-field-type">string</span>
+              <span class="api-field-req req-no">Optional</span>
+              <span class="api-field-desc">JSON-encoded custom headers</span>
+            </div>
+            <div class="api-field">
+              <span class="api-field-name">maxRetries</span>
+              <span class="api-field-type">int</span>
+              <span class="api-field-req req-no">Optional</span>
+              <span class="api-field-desc">Default: 3. Minimum: 1.</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 24px;">
+          <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 12px;">Example Response <span style="font-size: 0.78rem; color: var(--text-tertiary); font-weight: 400;">— 201 Created</span></h3>
+          <div class="code-block">
+            <div class="code-header">
+              <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+              <span>JSON</span>
+            </div>
+            <pre><code>{
+  <span class="code-string">"jobId"</span>: <span class="code-string">"a3f8c721-4b2e-4d91-b3a1-9e7f2c0d15ab"</span>,
+  <span class="code-string">"state"</span>: <span class="code-string">"PENDING"</span>,
+  <span class="code-string">"scheduledTime"</span>: <span class="code-string">"2025-12-01T14:30:00Z"</span>
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- ═══════════════ FOOTER ═══════════════ -->
+    <footer class="footer fade-in" id="footer">
+      <div class="container">
+        <p class="footer-tagline">Built with precision. Engineered for failure.</p>
+        <div class="footer-author">
+          <p class="footer-author-name">Mihir Revaskar</p>
+          <p class="footer-author-title">B.Tech ECE (Advanced Communication Technology)</p>
+          <p class="footer-author-title">Shah &amp; Anchor Kutchhi Engineering College, Mumbai</p>
+        </div>
+        <div class="footer-links">
+          <a href="https://www.linkedin.com/in/mihir-revaskar/" target="_blank" rel="noopener noreferrer" class="footer-link">LinkedIn</a>
+          <a href="https://mihirr.in" target="_blank" rel="noopener noreferrer" class="footer-link">Portfolio</a>
+          <a href="https://metricix.mihirr.in" target="_blank" rel="noopener noreferrer" class="footer-link">Metricix</a>
+        </div>
+        <div style="margin-bottom: 32px;">
+          <a href="https://github.com/mihirvr/cronas" target="_blank" rel="noopener noreferrer" class="btn-primary" id="footer-github-btn">
+            <svg viewBox="0 0 16 16" width="18" height="18"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" fill="currentColor"/></svg>
+            View on GitHub
+          </a>
+        </div>
+        <div class="footer-bottom">
+          © 2026 Cronas Engine. Open source.
+        </div>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- ═══════════════ SCRIPTS ═══════════════ -->
+  <script>
+    // ── Theme Management ──
+    (function() {
+      const html = document.documentElement;
+      const toggle = document.getElementById('theme-toggle');
+
+      // Check system preference, then localStorage
+      function getPreferredTheme() {
+        const stored = localStorage.getItem('cronas-theme');
+        if (stored) return stored;
+        return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+
+      function setTheme(theme) {
+        html.setAttribute('data-theme', theme);
+        localStorage.setItem('cronas-theme', theme);
+      }
+
+      // Initial theme
+      setTheme(getPreferredTheme());
+
+      // Toggle
+      toggle.addEventListener('click', () => {
+        const current = html.getAttribute('data-theme');
+        setTheme(current === 'dark' ? 'light' : 'dark');
+      });
+
+      // Listen for system theme changes
+      window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+        if (!localStorage.getItem('cronas-theme')) {
+          setTheme(e.matches ? 'light' : 'dark');
+        }
+      });
+    })();
+
+    // ── Live Clock ──
+    (function() {
+      const clockEl = document.getElementById('live-clock');
+      function updateClock() {
+        const now = new Date();
+        const h = String(now.getHours()).padStart(2, '0');
+        const m = String(now.getMinutes()).padStart(2, '0');
+        const s = String(now.getSeconds()).padStart(2, '0');
+        clockEl.textContent = h + ':' + m + ':' + s;
+      }
+      updateClock();
+      setInterval(updateClock, 1000);
+    })();
+
+    // ── Scroll Fade-In ──
+    (function() {
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+          }
+        });
+      }, { threshold: 0.1 });
+
+      document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+    })();
+
+    // ── Animated Clock Background (Canvas) ──
+    (function() {
+      const canvas = document.getElementById('clock-bg');
+      const ctx = canvas.getContext('2d');
+      let width, height;
+      let animationId;
+
+      function resize() {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // Floating clock particles
+      const clocks = [];
+      const CLOCK_COUNT = 6;
+
+      for (let i = 0; i < CLOCK_COUNT; i++) {
+        clocks.push({
+          x: Math.random() * width,
+          y: Math.random() * height,
+          radius: 40 + Math.random() * 80,
+          speed: 0.15 + Math.random() * 0.25,
+          angle: Math.random() * Math.PI * 2,
+          drift: Math.random() * Math.PI * 2,
+          driftSpeed: 0.0003 + Math.random() * 0.0005,
+          opacity: 0.03 + Math.random() * 0.04,
+          timeOffset: Math.random() * 86400000, // ms offset for variety
+        });
+      }
+
+      // Floating dots
+      const dots = [];
+      const DOT_COUNT = 30;
+      for (let i = 0; i < DOT_COUNT; i++) {
+        dots.push({
+          x: Math.random() * width,
+          y: Math.random() * height,
+          radius: 1.5 + Math.random() * 2.5,
+          speedX: (Math.random() - 0.5) * 0.3,
+          speedY: (Math.random() - 0.5) * 0.3,
+          opacity: 0.04 + Math.random() * 0.06,
+        });
+      }
+
+      function getColors() {
+        const theme = document.documentElement.getAttribute('data-theme');
+        if (theme === 'light') {
+          return {
+            face: 'rgba(242, 140, 40, 0.04)',
+            stroke: 'rgba(242, 140, 40, 0.08)',
+            tick: 'rgba(242, 140, 40, 0.12)',
+            hand: 'rgba(242, 140, 40, 0.15)',
+            dot: 'rgba(242, 140, 40, 0.05)',
+          };
+        }
+        return {
+          face: 'rgba(242, 140, 40, 0.02)',
+          stroke: 'rgba(242, 140, 40, 0.05)',
+          tick: 'rgba(242, 140, 40, 0.08)',
+          hand: 'rgba(242, 140, 40, 0.1)',
+          dot: 'rgba(242, 140, 40, 0.03)',
+        };
+      }
+
+      function drawClock(clock, time, colors) {
+        const adjustedTime = time + clock.timeOffset;
+        const seconds = (adjustedTime / 1000) % 60;
+        const minutes = (adjustedTime / 60000) % 60;
+        const hours = (adjustedTime / 3600000) % 12;
+
+        ctx.save();
+        ctx.translate(clock.x, clock.y);
+        ctx.globalAlpha = clock.opacity;
+
+        // Face
+        ctx.beginPath();
+        ctx.arc(0, 0, clock.radius, 0, Math.PI * 2);
+        ctx.fillStyle = colors.face;
+        ctx.fill();
+        ctx.strokeStyle = colors.stroke;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Hour ticks
+        for (let i = 0; i < 12; i++) {
+          const tickAngle = (i * Math.PI * 2) / 12 - Math.PI / 2;
+          const inner = clock.radius * 0.82;
+          const outer = clock.radius * 0.92;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(tickAngle) * inner, Math.sin(tickAngle) * inner);
+          ctx.lineTo(Math.cos(tickAngle) * outer, Math.sin(tickAngle) * outer);
+          ctx.strokeStyle = colors.tick;
+          ctx.lineWidth = i % 3 === 0 ? 2 : 1;
+          ctx.stroke();
+        }
+
+        // Hour hand
+        const hourAngle = ((hours * Math.PI * 2) / 12) - Math.PI / 2;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(
+          Math.cos(hourAngle) * clock.radius * 0.5,
+          Math.sin(hourAngle) * clock.radius * 0.5
+        );
+        ctx.strokeStyle = colors.hand;
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Minute hand
+        const minAngle = ((minutes * Math.PI * 2) / 60) - Math.PI / 2;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(
+          Math.cos(minAngle) * clock.radius * 0.68,
+          Math.sin(minAngle) * clock.radius * 0.68
+        );
+        ctx.strokeStyle = colors.hand;
+        ctx.lineWidth = 1.5;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Second hand
+        const secAngle = ((seconds * Math.PI * 2) / 60) - Math.PI / 2;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(
+          Math.cos(secAngle) * clock.radius * 0.75,
+          Math.sin(secAngle) * clock.radius * 0.75
+        );
+        ctx.strokeStyle = 'rgba(242, 140, 40, ' + (clock.opacity * 2.5) + ')';
+        ctx.lineWidth = 0.8;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Center dot
+        ctx.beginPath();
+        ctx.arc(0, 0, 2, 0, Math.PI * 2);
+        ctx.fillStyle = colors.hand;
+        ctx.fill();
+
+        ctx.restore();
+      }
+
+      function animate() {
+        ctx.clearRect(0, 0, width, height);
+        const time = Date.now();
+        const colors = getColors();
+
+        // Update and draw floating dots
+        dots.forEach(dot => {
+          dot.x += dot.speedX;
+          dot.y += dot.speedY;
+
+          // Wrap around
+          if (dot.x < -10) dot.x = width + 10;
+          if (dot.x > width + 10) dot.x = -10;
+          if (dot.y < -10) dot.y = height + 10;
+          if (dot.y > height + 10) dot.y = -10;
+
+          ctx.beginPath();
+          ctx.arc(dot.x, dot.y, dot.radius, 0, Math.PI * 2);
+          ctx.fillStyle = colors.dot;
+          ctx.globalAlpha = dot.opacity;
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        });
+
+        // Update and draw clocks
+        clocks.forEach(clock => {
+          clock.drift += clock.driftSpeed;
+          clock.x += Math.cos(clock.drift) * clock.speed * 0.5;
+          clock.y += Math.sin(clock.drift) * clock.speed * 0.5;
+
+          // Soft wrap
+          if (clock.x < -clock.radius * 2) clock.x = width + clock.radius;
+          if (clock.x > width + clock.radius * 2) clock.x = -clock.radius;
+          if (clock.y < -clock.radius * 2) clock.y = height + clock.radius;
+          if (clock.y > height + clock.radius * 2) clock.y = -clock.radius;
+
+          drawClock(clock, time, colors);
+        });
+
+        animationId = requestAnimationFrame(animate);
+      }
+
+      animate();
+    })();
+  </script>
+</body>
+</html>
