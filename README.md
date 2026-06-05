@@ -83,8 +83,9 @@ PENDING ──► IN_PROGRESS ──► COMPLETED
                          │
                          └──► FAILED (dead letter — max retries exceeded)
 ```
+<img width="1820" height="610" alt="image" src="https://github.com/user-attachments/assets/13cd7e6b-5a23-45e6-bde6-5e9235343d29" />
 
-![System Telemetry & Architecture under Load](./architecture-metrics.png)
+![System Telemetry & Architecture under Load]
 
 ---
 
